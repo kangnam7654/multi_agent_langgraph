@@ -2,50 +2,39 @@ import dotenv
 import yaml
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.prebuilt import ToolNode
 
-from src.custom_agents import AgentDirector, AgentInspector, AgentWriter
-from src.custom_states import AgentState
-from src.custom_tools.lore_book import get_dragon_lore
+from src.agents import AgentDirector, AgentInspector, AgentWriter
+from src.states import AgentState
+from src.tools.load_prompt import load_prompt
+from src.tools.lore_book import get_dragon_lore
 
 _ = dotenv.load_dotenv()
 
 PROMPTS_DIR = "src/prompts"
 
 
-def load_prompt(path: str) -> str:
-    """
-    Load a prompt from the specified path.
+def should_continue(state: AgentState):
+    messages = state["messages"]
+    last_message = messages[-1]
+    if last_message.tool_calls:
+        return "tools"
 
-    Args:
-        path (str): The path to the prompt file.
-
-    Returns:
-        str: The content of the prompt file.
-    """
-    with open(path, "r", encoding="utf-8") as file:
-        return yaml.safe_load(file)["system"]
-
-
-def router(state: dict) -> str:
-    """
-    Router function to determine the next agent based on the current state.
-
-    Args:
-        state (dict): The current state of the graph.
-
-    Returns:
-        str: The name of the next agent to invoke.
-    """
-    if state["next_agent"] == "director":
-        return "director"
-    elif state["next_agent"] == "inspector":
-        return "inspector"
-    elif state["next_agent"] == "writer":
+    if state["current_agent"] == "director":
+        if state.get("can_publish", False):
+            return END
         return "writer"
-    elif state["next_agent"] == END:
-        return END
+    elif state["current_agent"] == "inspector":
+        if state["next_agent"] == "writer":
+            return "writer"
+        elif state["next_agent"] == "director":
+            return "director"
+        else:
+            raise ValueError(f"Unknown next agent: {state['next_agent']}")
+    elif state["current_agent"] == "writer":
+        return "inspector"
     else:
-        raise ValueError(f"Unknown agent: {state['next_agent']}")
+        raise ValueError(f"Unknown current agent: {state['current_agent']}")
 
 
 def build_graph() -> StateGraph:
@@ -55,38 +44,55 @@ def build_graph() -> StateGraph:
     Returns:
         StateGraph: The constructed state graph.
     """
-    # Load prompts
-    director_prompt = load_prompt(f"{PROMPTS_DIR}/director_v1.yaml")
+    # ================
+    # | Load prompts |
+    # ================
+    director_prompt = load_prompt(f"{PROMPTS_DIR}/director_v2.yaml")
     inspector_prompt = load_prompt(f"{PROMPTS_DIR}/inspector_v1.yaml")
     writer_prompt = load_prompt(f"{PROMPTS_DIR}/writer_v1.yaml")
 
-    # Set up agents
-    director = AgentDirector("Director", director_prompt, tools=[get_dragon_lore])
-    inspector = AgentInspector("Inspector", inspector_prompt, tools=[get_dragon_lore])
-    writer = AgentWriter("Writer", writer_prompt, tools=[get_dragon_lore])
+    # =================
+    # | Set up agents |
+    # =================
+    director = AgentDirector("Director", director_prompt)
+    inspector = AgentInspector("Inspector", inspector_prompt)
+    writer = AgentWriter("Writer", writer_prompt)
+    tool_node = ToolNode([get_dragon_lore])
 
-    # Build graph
+    # ===============
+    # | Build graph |
+    # ===============
     graph = StateGraph(AgentState)
 
-    # Define nodes
+    # ================
+    # | Define nodes |
+    # ================
     graph.add_node("director", director)
     graph.add_node("inspector", inspector)
     graph.add_node("writer", writer)
+    graph.add_node("tools", tool_node)
 
-    # Define edges
+    # ================
+    # | Define edges |
+    # ================
     graph.add_edge(START, "director")
-    # graph.add_edge("director", END)
+
+    # tools handling
+    graph.add_conditional_edges("director", should_continue, {"tools": "tools", "writer": "writer", END: END})
     graph.add_conditional_edges(
-        "director",
-        router,
+        "inspector", should_continue, {"tools": "tools", "director": "director", "writer": "writer"}
+    )
+    graph.add_conditional_edges("writer", should_continue, {"tools": "tools", "inspector": "inspector"})
+    graph.add_conditional_edges(
+        "tools",
+        should_continue,
         {
+            "tools": "tools",
+            "director": "director",
             "inspector": "inspector",
             "writer": "writer",
-            END: END,
         },
     )
-    graph.add_conditional_edges("inspector", router, {"director": "director", "writer": "writer"})
-    graph.add_conditional_edges("writer", router, {"inspector": "inspector", "director": "director"})
 
     checkpointer = MemorySaver()
     compiled_graph = graph.compile(checkpointer=checkpointer)
@@ -98,9 +104,15 @@ def main():
     Main function to run the custom agent graph.
     """
     graph = build_graph()
+    mermaid = graph.get_graph().draw_mermaid_png()
+    with open("graph.png", "wb") as f:
+        f.write(mermaid)
+    pass
 
     for chunk in graph.stream(
-        {"task": "드래곤에 대한 간단한 시나리오를 써보세요.", "allow_tools": False},
+        {
+            "task": "Write some scenario about a dragon.",
+        },
         {"configurable": {"thread_id": "1"}},
     ):
         for event in chunk.values():
@@ -112,7 +124,7 @@ def main():
             if event["current_agent"] == "writer":
                 print("Scenario:")
                 print(event["scenario"])
-            print("==========================")
+            print("==========================\n")
 
 
 if __name__ == "__main__":

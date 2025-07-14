@@ -6,9 +6,10 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 class AgentState(TypedDict):
     task: str
     messages: list[HumanMessage | SystemMessage | ToolMessage | AIMessage]
+    scenario: str | None
     current_agent: str
-    next_agent: str
-    allow_tools: bool
+    passed: bool
+    can_publish: bool
+    next_agent: str | None
     revision: int
     max_revision: int
-    scenario: str | None

@@ -4,7 +4,6 @@ from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_groq import ChatGroq
-from langgraph.graph import END
 from langgraph.types import Command
 
 
@@ -29,7 +28,7 @@ class CustomBaseAgent(ABC):
         pass
 
     def load_default_model(self) -> ChatGroq:
-        model = ChatGroq(model="meta-llama/llama-4-maverick-17b-128e-instruct", temperature=0)
+        model = ChatGroq(model="deepseek-r1-distill-llama-70b", temperature=0)
         return model
 
     def bind_tools(self, tools: list[Callable]) -> None:
@@ -43,16 +42,3 @@ class CustomBaseAgent(ABC):
     def has_reached_max_revisions(self, state: dict[str, Any]) -> bool:
         """Return the maximum revision number for the agent."""
         return state.get("revision", 0) >= state.get("max_revision", 10)
-
-
-# if __name__ == "__main__":
-#     model = ChatGroq(model="meta-llama/llama-4-maverick-17b-128e-instruct", temperature=0)
-#     model = model.with_structured_output(BaseResponseFormat)
-
-#     response = model.invoke(
-#         [
-#             {"role": "system", "content": "You are a helpful assistant."},
-#             {"role": "user", "content": "What is the capital of France?"},
-#         ]
-#     )
-#     pass
