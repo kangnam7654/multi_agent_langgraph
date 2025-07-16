@@ -1,5 +1,5 @@
 import json
-import re
+import logging
 from typing import Any, Callable
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -9,81 +9,95 @@ from langgraph.types import Command
 from src.agents.base_agent import CustomBaseAgent
 from src.messages.custom_messages import InspectorMessage
 
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
 
 class AgentInspector(CustomBaseAgent):
     def __init__(
         self,
         name: str | None = None,
         system_prompt: str | None = None,
-        *,
-        tools: list[Callable] | None = None,
         model: BaseChatModel | None = None,
+        last_n_messages: int = 3,
+        max_tries: int = 5,
     ):
         """Initialize the AgentInspector"""
         if name is None:
-            name = "Inspector"
+            name = "inspector"
         if system_prompt is None:
             system_prompt = "You are a helpful assistant named Inspector tasked with inspecting \
                 the scenario that the Writer had written."
 
-        super().__init__(name=name, system_prompt=system_prompt, model=model, tools=tools)
+        super().__init__(name=name, system_prompt=system_prompt, model=model, last_n_messages=last_n_messages)
         # self.model = self.model.with_structured_output(InspectorMessage)  # type: ignore
+        self.max_tries = max_tries
 
     def __call__(self, state: dict[str, Any]) -> Command[Any]:
-        revision: int = state["revision"]
+        revision: int = state["revision"] + 1
+
+        # Check Max Revisions
         if self.has_reached_max_revisions(state):
-            return Command(goto="director", update={"messages": state["messages"], "revision": revision})
+            to_update = {
+                "task": state.get("task", ""),
+                "meesages": state["messages"].append(
+                    InspectorMessage(content="MAX REVISION REACHED.", inspector_passed=False)
+                ),
+                "director_can_publish": state.get("director_can_publish", False),
+                "inspector_passed": False,
+                "writer_scenario": state.get("writer_scenario", ""),
+                "current_agent": "inspector",
+                "next_agent": "director",
+                "revision": revision,
+                "max_revision": self.max_revision,
+            }
+            return Command(update=to_update)
+
+        # Prepare Message
         messages: list = state["messages"]
+        task = messages[0]
+        if len(messages) > self.last_n_messages:
+            messages = messages[-self.last_n_messages :]
+        messages_with_system_message = [SystemMessage(content=self.system_prompt), task] + messages
+        current_try = 0
+        parsed_data = {}
 
-        messages_with_system_message = [SystemMessage(content=self.system_prompt)] + messages
-
-        try:
-            print(f"Attempting to invoke model with {len(messages_with_system_message)} messages")
-            print(f"System prompt length: {len(self.system_prompt)}")
-
-            # Get raw response
+        while current_try < self.max_tries:
             raw_response = self.model.invoke(messages_with_system_message)
+            content = raw_response.content
 
             # Parse JSON from response
-            content = raw_response.content
             try:
                 # Try to extract JSON from the response
-                json_match = re.search(r"\{.*\}", content, re.DOTALL)
-                if json_match:
-                    json_str = json_match.group()
-                    parsed_data = json.loads(json_str)
-                else:
-                    # Fallback data
-                    parsed_data = {"type": "inspector", "passed": True, "content": content, "next_agent": "director"}
-
-                # Create InspectorMessage object
-                response = InspectorMessage(
-                    type=parsed_data.get("type", "inspector"),
-                    passed=parsed_data.get("passed", True),
-                    content=parsed_data.get("content", "Inspection completed"),
-                )
-
+                parsed_data = self.extract_json_from_content(content)
+                break
             except (json.JSONDecodeError, AttributeError) as e:
-                print(f"Failed to parse JSON, using fallback: {e}")
-                response = InspectorMessage(type="inspector", passed=True, content=content)
+                current_try += 1
 
-        except Exception as e:
-            print(f"Error invoking model: {e}")
-            print(
-                f"Messages: {[msg.content[:100] if hasattr(msg, 'content') else str(msg)[:100] for msg in messages_with_system_message]}"
-            )
-            # Create fallback response
-            response = InspectorMessage(
-                type="inspector", passed=True, content="Error occurred during inspection. Proceeding with approval."
-            )
+        if not parsed_data:
+            if not state.get("writer_scenario"):
+                parsed_data = {
+                    "content": "WARNING: No scenario provided by the writer. Write again.",
+                    "inspector_passed": False,
+                    "next_agent": "writer",
+                }
+        response = InspectorMessage(
+            content=parsed_data.get("content", "No content provided"),
+            inspector_passed=parsed_data.get("inspector_passed", False),
+            tool_calls=parsed_data.get("tool_calls", []),
+            next_agent=parsed_data.get("next_agent", "director"),
+        )
 
         messages.append(response)
-        revision += 1
         to_update = {
+            "task": state.get("task", ""),
             "messages": messages,
-            "passed": response.passed,
-            "current_agent": response.type.lower(),
-            "next_agent": "director" if response.passed else "writer",
+            "director_can_publish": state.get("director_can_publish", False),
+            "inspector_passed": response.inspector_passed,
+            "writer_scenario": state.get("writer_scenario", ""),
+            "current_agent": "inspector",
+            "next_agent": response.next_agent,
             "revision": revision,
+            "max_revision": self.max_revision,
         }
         return Command(update=to_update)
