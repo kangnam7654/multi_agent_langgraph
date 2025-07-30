@@ -3,7 +3,7 @@ requires = ["setuptools>=42", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "game_scenario_agent"
+name = "multi-agent-langgraph"
 version = "0.1.0"
 description = "A multi-agent game scenario using LangChain and LangGraph"
 requires-python = ">=3.11"
@@ -30,6 +30,7 @@ dependencies = [
     "langgraph-supervisor>=0.0.27",
     "langgraph-swarm>=0.0.11",
     "pyyaml>=6.0.2",
+    "opencv-python>=4.12.0.88",
 ]
 
 [project.optional-dependencies]
@@ -42,3 +43,10 @@ dev = [
 [tool.black]
 line-length = 120
 target-version = ["py311"]
+
+[dependency-groups]
+dev = [
+    "datasets>=4.0.0",
+    "huggingface-hub[cli]>=0.33.4",
+    "pip>=25.1.1",
+]

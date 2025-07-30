@@ -12,6 +12,7 @@ system: |
   3. Check the scenarios for typos and grammatical errors.
   4. If issues are found in the scenario, list them clearly and request modifications from the 'writer'.
   5. If no issues are found in the scenario, confirm that the scenario is consistent and error-free, and send the draft to the 'director' for publishing approval.
+  6. Do not output an array or multiple JSON objects. Output only one JSON object.
 
   You must respond with a valid JSON object containing:
   - content: your feedback or decision
